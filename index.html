@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Обща дъска</title>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+  :root {
+    --paper: #f3efe6;
+    --ink: #1d2a33;
+    --line: #cfc8b8;
+    --accent: #1f6f78;
+    --ok: #2e7d4f;
+    --bad: #b3402f;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    display: flex;
+    flex-direction: column;
+    overscroll-behavior: none;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    padding: 10px 12px; border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 1.1rem; margin: 0 auto 0 0; font-weight: 700; letter-spacing: .01em; }
+  button, input {
+    font: inherit; color: inherit; border: 1.5px solid var(--ink);
+    background: #fff; border-radius: 8px; padding: 8px 12px; min-height: 40px;
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--ink); color: var(--paper); }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  input.code { width: 7.5em; text-transform: uppercase; text-align: center; letter-spacing: .2em; font-weight: 700; }
+  #status { font-size: .9rem; display: flex; align-items: center; gap: 6px; }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+  #dot.on { background: var(--ok); }
+  #dot.err { background: var(--bad); }
+  #room { font-size: 1.4rem; font-weight: 800; letter-spacing: .25em; }
+  .tools {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    padding: 8px 12px; border-bottom: 1px solid var(--line);
+  }
+  .sw { width: 34px; height: 34px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1.5px var(--ink); padding: 0; min-height: 0; }
+  .sw[aria-pressed="true"] { box-shadow: 0 0 0 3px var(--accent); }
+  input[type=range] { padding: 0; min-height: 0; width: 110px; border: 0; background: none; }
+  main { flex: 1; position: relative; min-height: 0; background: #fff; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  @media (prefers-color-scheme: dark) {
+    :root { --paper: #1b2227; --ink: #ece7da; --line: #3a464e; --accent: #5cc0c9; }
+    button, input { background: #232d33; }
+    button.primary { background: var(--ink); color: #1b2227; }
+    .sw { border-color: #1b2227; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Обща дъска</h1>
+  <div id="status"><span id="dot"></span><span id="statusText">Не си свързан</span></div>
+</header>
+
+<header id="lobby">
+  <button class="primary" id="btnHost">Създай стая</button>
+  <span>или</span>
+  <input class="code" id="joinCode" maxlength="4" placeholder="КОД" aria-label="Код на стаята" autocomplete="off">
+  <button id="btnJoin">Влез</button>
+</header>
+
+<header id="roomBar" hidden>
+  <span>Код на стаята:</span> <span id="room"></span>
+  <span id="count"></span>
+</header>
+
+<div class="tools">
+  <button class="sw" data-c="#1d2a33" style="background:#1d2a33" aria-label="Черно" aria-pressed="true"></button>
+  <button class="sw" data-c="#d1432f" style="background:#d1432f" aria-label="Червено" aria-pressed="false"></button>
+  <button class="sw" data-c="#e9a21b" style="background:#e9a21b" aria-label="Жълто" aria-pressed="false"></button>
+  <button class="sw" data-c="#2e7d4f" style="background:#2e7d4f" aria-label="Зелено" aria-pressed="false"></button>
+  <button class="sw" data-c="#1f6f78" style="background:#1f6f78" aria-label="Синьо" aria-pressed="false"></button>
+  <button class="sw" data-c="#7b3fa0" style="background:#7b3fa0" aria-label="Лилаво" aria-pressed="false"></button>
+  <button class="sw" data-c="#ffffff" style="background:#fff" aria-label="Гума" aria-pressed="false"></button>
+  <input type="range" id="size" min="2" max="30" value="5" aria-label="Дебелина">
+  <button id="btnClear">Изчисти</button>
+</div>
+
+<main><canvas id="cv"></canvas></main>
+
+<script>
+(function () {
+  const PREFIX = "bgschool-board-";
+  const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+  const $ = id => document.getElementById(id);
+
+  let color = "#1d2a33", size = 5;
+  let peer = null, isHost = false;
+  let conns = [];           // host: всички клиенти; клиент: само хостът
+  let history = [];         // всички сегменти (хостът ги пази за нови участници)
+
+  /* ---------- Canvas ---------- */
+  function resize() {
+    const r = cv.parentElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = r.width * dpr; cv.height = r.height * dpr;
+    redraw();
+  }
+  function drawSeg(s) {
+    const W = cv.width, H = cv.height;
+    ctx.strokeStyle = s.c;
+    ctx.lineWidth = s.w * (W / 1000);
+    ctx.lineCap = ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(s.x0 * W, s.y0 * H);
+    ctx.lineTo(s.x1 * W, s.y1 * H);
+    ctx.stroke();
+  }
+  function redraw() {
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    history.forEach(drawSeg);
+  }
+  window.addEventListener("resize", resize);
+
+  /* ---------- Рисуване ---------- */
+  let last = null;
+  function pos(e) {
+    const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+  }
+  cv.addEventListener("pointerdown", e => { cv.setPointerCapture(e.pointerId); last = pos(e); addSeg(last, last); });
+  cv.addEventListener("pointermove", e => { if (!last) return; const p = pos(e); addSeg(last, p); last = p; });
+  ["pointerup", "pointercancel"].forEach(t => cv.addEventListener(t, () => last = null));
+
+  function addSeg(a, b) {
+    const s = { x0: a.x, y0: a.y, x1: b.x, y1: b.y, c: color, w: size };
+    history.push(s);
+    drawSeg(s);
+    send({ t: "seg", s });
+  }
+
+  /* ---------- Мрежа ---------- */
+  function send(msg, except) {
+    conns.forEach(c => { if (c !== except && c.open) c.send(msg); });
+  }
+  function handle(msg, from) {
+    if (msg.t === "seg") { history.push(msg.s); drawSeg(msg.s); if (isHost) send(msg, from); }
+    else if (msg.t === "clear") { history = []; redraw(); if (isHost) send(msg, from); }
+    else if (msg.t === "hist") { history = msg.h; redraw(); }
+  }
+  function setStatus(text, state) {
+    $("statusText").textContent = text;
+    $("dot").className = state || "";
+  }
+  function updateCount() {
+    $("count").textContent = isHost ? "· Свързани: " + (conns.filter(c => c.open).length + 1) : "";
+  }
+  function enterRoom(code) {
+    $("lobby").hidden = true;
+    $("roomBar").hidden = false;
+    $("room").textContent = code;
+  }
+  function randCode() {
+    let s = "";
+    for (let i = 0; i < 4; i++) s += ALPHABET[Math.floor(Math.random() * ALPHABET.length)];
+    return s;
+  }
+
+  function host(tries) {
+    tries = tries || 0;
+    const code = randCode();
+    setStatus("Създавам стая…");
+    peer = new Peer(PREFIX + code);
+    peer.on("open", () => {
+      isHost = true;
+      enterRoom(code);
+      setStatus("Стаята е отворена – дай кода на другите", "on");
+      updateCount();
+    });
+    peer.on("connection", c => {
+      c.on("open", () => {
+        conns.push(c);
+        c.send({ t: "hist", h: history });
+        updateCount();
+      });
+      c.on("data", d => handle(d, c));
+      const drop = () => { conns = conns.filter(x => x !== c); updateCount(); };
+      c.on("close", drop); c.on("error", drop);
+    });
+    peer.on("error", err => {
+      if (err.type === "unavailable-id" && tries < 5) { peer.destroy(); host(tries + 1); }
+      else setStatus("Грешка: " + err.type, "err");
+    });
+  }
+
+  function join() {
+    const code = $("joinCode").value.trim().toUpperCase();
+    if (code.length !== 4) { setStatus("Въведи 4-знаков код", "err"); return; }
+    setStatus("Свързвам се…");
+    peer = new Peer();
+    peer.on("open", () => {
+      const c = peer.connect(PREFIX + code, { reliable: true });
+      const timer = setTimeout(() => setStatus("Няма такава стая", "err"), 8000);
+      c.on("open", () => {
+        clearTimeout(timer);
+        conns = [c];
+        enterRoom(code);
+        setStatus("Свързан със стая " + code, "on");
+      });
+      c.on("data", d => handle(d, c));
+      c.on("close", () => setStatus("Хостът затвори стаята", "err"));
+    });
+    peer.on("error", err => setStatus(err.type === "peer-unavailable" ? "Няма такава стая" : "Грешка: " + err.type, "err"));
+  }
+
+  /* ---------- Контроли ---------- */
+  $("btnHost").onclick = () => host();
+  $("btnJoin").onclick = join;
+  $("joinCode").addEventListener("keydown", e => { if (e.key === "Enter") join(); });
+  $("size").oninput = e => size = +e.target.value;
+  $("btnClear").onclick = () => { history = []; redraw(); send({ t: "clear" }); };
+  document.querySelectorAll(".sw").forEach(b => b.onclick = () => {
+    color = b.dataset.c;
+    document.querySelectorAll(".sw").forEach(x => x.setAttribute("aria-pressed", x === b));
+  });
+
+  resize();
+})();
+</script>
+</body>
+</html>
